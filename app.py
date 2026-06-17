@@ -30,6 +30,7 @@ DATASETS_TO_DISCOVER = {
     "inactive_no_model":"rechev_le_pail_without-degem",
     "cancelled":"reshev_bitul_sofi","recall_notices":"recall",
     "filters":"vehicles_filters_reduce_emissions","aircraft":"aircraft_data_il",
+    "disabled_tag":"rechev-tag-nachim",
 }
 DISCOVERED = {}
 
@@ -366,10 +367,30 @@ def search(plate):
     for p in vrs:recall.extend(fetch(KNOWN["recall"],{"mispar_rechev":p},50))
     result["recall"]=[clean_rec(r) for r in recall]
 
-    # Disabled
+    # Disabled tag - try multiple field names and resource IDs
     dis=[]
-    for p in vrs:dis.extend(fetch(KNOWN["disabled"],{"mispar_rechev":p},5))
+    dis_rid = DISCOVERED.get("disabled_tag") or KNOWN["disabled"]
+    for p in vrs:
+        # Try different field name variations
+        for field in ["mispar_rechev","MISPAR_RECHEV","Mispar_Rechev"]:
+            recs = fetch(dis_rid, {field: p}, 5)
+            if recs:
+                dis.extend(recs)
+                break
+        # Also try as integer
+        if not dis:
+            try:
+                p_int = str(int(p))
+                for field in ["mispar_rechev","MISPAR_RECHEV"]:
+                    recs = fetch(dis_rid, {field: p_int}, 5)
+                    if recs:
+                        dis.extend(recs)
+                        break
+            except: pass
+        if dis: break
     result["disabled_tag"]=len(dis)>0
+    if dis: print(f"  ♿ תג נכה נמצא! {len(dis)} רשומות")
+    else: print(f"  ♿ אין תג נכה")
 
     # Filters
     frid=DISCOVERED.get("filters")

@@ -367,30 +367,20 @@ def search(plate):
     for p in vrs:recall.extend(fetch(KNOWN["recall"],{"mispar_rechev":p},50))
     result["recall"]=[clean_rec(r) for r in recall]
 
-    # Disabled tag - try multiple field names and resource IDs
+    # Disabled tag - field name has SPACE not underscore!
     dis=[]
     dis_rid = DISCOVERED.get("disabled_tag") or KNOWN["disabled"]
     for p in vrs:
-        # Try different field name variations
-        for field in ["mispar_rechev","MISPAR_RECHEV","Mispar_Rechev"]:
+        for field in ["MISPAR RECHEV","mispar_rechev"]:
             recs = fetch(dis_rid, {field: p}, 5)
-            if recs:
-                dis.extend(recs)
-                break
-        # Also try as integer
-        if not dis:
+            if recs: dis.extend(recs); break
+            # Try as integer
             try:
-                p_int = str(int(p))
-                for field in ["mispar_rechev","MISPAR_RECHEV"]:
-                    recs = fetch(dis_rid, {field: p_int}, 5)
-                    if recs:
-                        dis.extend(recs)
-                        break
+                recs = fetch(dis_rid, {field: int(p)}, 5)
+                if recs: dis.extend(recs); break
             except: pass
         if dis: break
     result["disabled_tag"]=len(dis)>0
-    if dis: print(f"  ♿ תג נכה נמצא! {len(dis)} רשומות")
-    else: print(f"  ♿ אין תג נכה")
 
     # Filters
     frid=DISCOVERED.get("filters")

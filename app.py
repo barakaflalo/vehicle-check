@@ -392,7 +392,118 @@ def search(plate):
     # Local KM
     result["local_km"]=load_km().get(result["plate"],[])
 
-    print(f"✅ {result['plate']} [{result['found_in']}] owners={len(h2)} recall={len(recall)} wltp={'✓' if wltp_raw else '✗'}")
+    # ===== RISK ANALYSIS =====
+    risks = []
+    
+    # 1. Structural changes
+    for rec in h1:
+        if str(rec.get("shinui_mivne_ind","0")).strip() == "1":
+            risks.append({"level":"red","icon":"🔧","title":"שינוי מבנה","desc":"הרכב עבר שינוי מבנה מדווח. ייתכן שתוקן לאחר תאונה קשה."})
+            break
+    
+    # 2. Originality
+    for rec in h1:
+        mkor = str(rec.get("mkoriut_nm","")).strip()
+        if mkor and mkor not in ("","None","החכר","מקורי","חדש"):
+            risks.append({"level":"orange","icon":"📋","title":"מקוריות: "+mkor,"desc":"הרכב אינו מסווג כמקורי. ייתכן שעבר שינויים או שוקם."})
+            break
+    
+    # 3. Color change
+    for rec in h1:
+        if str(rec.get("shnui_zeva_ind","0")).strip() == "1":
+            risks.append({"level":"orange","icon":"🎨","title":"שינוי צבע","desc":"הרכב עבר שינוי צבע. לעיתים מעיד על תיקון פחחות נרחב."})
+            break
+    
+    # 4. Tire change
+    for rec in h1:
+        if str(rec.get("shinui_zmig_ind","0")).strip() == "1":
+            risks.append({"level":"info","icon":"🔄","title":"שינוי צמיגים","desc":"הרכב עבר שינוי מידות צמיגים."})
+            break
+    
+    # 5. Suspicious ownership pattern
+    if h2 and len(h2) >= 3:
+        owners_clean = [clean_rec(r) for r in h2]
+        # Check for rapid flips (dealer-private-dealer in short time)
+        types = [str(r.get("baalut_nm",r.get("סוג בעלות",r.get("בעלות","")))).strip() for r in h2]
+        dates = [str(r.get("baalut_dt",r.get("תאריך בעלות",""))).strip() for r in h2]
+        dealer_count = sum(1 for t in types if "סוחר" in t)
+        if dealer_count >= 2:
+            risks.append({"level":"orange","icon":"🔀","title":f"החלפת בעלים תכופה ({len(h2)} בעלים, {dealer_count} סוחרים)","desc":"הרכב עבר דרך סוחרים מספר פעמים. ייתכן שנקנה בזול, תוקן ונמכר."})
+    
+    if h2 and len(h2) >= 5:
+        risks.append({"level":"orange","icon":"👥","title":f"{len(h2)} החלפות בעלים","desc":"מספר גבוה של בעלים קודמים. שווה לברר למה."})
+    
+    # 6. Vehicle was previously inactive
+    if result["found_in"] and "לא פעיל" not in result["found_in"]:
+        # Check if it appears in inactive databases
+        was_inactive = False
+        for db_key in ["inactive_w_model","inactive_no_model","cancelled"]:
+            rid = DISCOVERED.get(db_key)
+            if not rid: continue
+            for p in vrs:
+                recs = fetch(rid, {"mispar_rechev":p}, 1)
+                if recs:
+                    was_inactive = True
+                    break
+            if was_inactive: break
+        if was_inactive:
+            risks.append({"level":"red","icon":"⚠️","title":"הרכב היה מושבת בעבר!","desc":"הרכב מופיע במאגר רכבים לא פעילים אך כיום פעיל. ייתכן שהורד מהכביש ושוקם. מומלץ מאוד לבצע בדיקה מקיפה."})
+    
+    # 7. KM anomaly
+    if km_history and len(km_history) >= 2:
+        for i in range(len(km_history)-1):
+            if km_history[i].get("km") and km_history[i+1].get("km"):
+                if km_history[i]["km"] < km_history[i+1]["km"]:
+                    risks.append({"level":"red","icon":"⏪","title":"ירידה בקילומטראז׳!","desc":f"נרשמה ירידה בק\"מ בין טסטים ({km_history[i+1]['km']:,} → {km_history[i]['km']:,}). חשד להחזרת מד אוץ!"})
+                    break
+    
+    # 8. Expired test
+    tokef = vehicle.get("tokef_dt","")
+    if tokef:
+        try:
+            tokef_date = tokef.split("T")[0]
+            from datetime import date
+            parts = tokef_date.split("-")
+            if len(parts)==3:
+                exp = date(int(parts[0]),int(parts[1]),int(parts[2]))
+                if exp < date.today():
+                    risks.append({"level":"orange","icon":"📅","title":"טסט פג תוקף!","desc":f"תוקף הרישיון פג ב-{tokef_date}. הרכב לא עבר טסט בזמן."})
+        except: pass
+    
+    # 9. Very high km for age
+    yr = vehicle.get("shnat_yitzur")
+    if yr and latest_km:
+        try:
+            age = datetime.now().year - int(yr)
+            if age > 0:
+                per_year = latest_km / age
+                if per_year > 30000:
+                    risks.append({"level":"orange","icon":"🛣️","title":f"נסועה גבוהה ({int(per_year):,} ק״מ/שנה)","desc":"ממוצע ק\"מ שנתי גבוה מהרגיל (מעל 30,000). ייתכן שהרכב שימש כמונית, השכרה, או נסיעות ארוכות."})
+        except: pass
+    
+    # Calculate overall score
+    red_count = sum(1 for r in risks if r["level"]=="red")
+    orange_count = sum(1 for r in risks if r["level"]=="orange")
+    
+    if red_count > 0:
+        risk_level = "red"
+        risk_title = "נמצאו דגלים אדומים — מומלץ בדיקה מקיפה!"
+    elif orange_count > 0:
+        risk_level = "orange"
+        risk_title = "נמצאו נקודות לתשומת לב"
+    else:
+        risk_level = "green"
+        risk_title = "לא נמצאו דגלים חשודים"
+    
+    result["risk"] = {
+        "level": risk_level,
+        "title": risk_title,
+        "flags": risks,
+        "red": red_count,
+        "orange": orange_count
+    }
+
+    print(f"✅ {result['plate']} [{result['found_in']}] owners={len(h2)} recall={len(recall)} risk={risk_level}({red_count}R/{orange_count}O)")
     return jsonify(result)
 
 
@@ -591,6 +702,26 @@ else h+='<div class="al al-g">✅ אין קריאות ריקול פתוחות</d
 if(d.disabled_tag)h+='<div class="al al-g">♿ לרכב זה רשום תו חניה לנכה</div>';
 else h+='<div class="al al-r">♿ אין תו חניה לנכה</div>';
 if(d.found_in&&d.found_in.includes('לא פעיל'))h+='<div class="al al-r">🚫 רכב לא פעיל — ירד מהכביש!</div>';
+
+// Risk Analysis
+if(d.risk){const r=d.risk;
+const bg=r.level==='red'?'#fef2f2':r.level==='orange'?'#fffbeb':'#f0fdf4';
+const bc=r.level==='red'?'#fca5a5':r.level==='orange'?'#fcd34d':'#86efac';
+const tc=r.level==='red'?'#991b1b':r.level==='orange'?'#92400e':'#166534';
+const icon=r.level==='red'?'🚨':r.level==='orange'?'⚡':'✅';
+h+=`<div style="background:${bg};border:2.5px solid ${bc};border-radius:14px;padding:1rem 1.2rem;margin-bottom:.8rem">`;
+h+=`<div style="text-align:center;font-weight:800;font-size:1rem;color:${tc};margin-bottom:.5rem">${icon} ניתוח סיכונים — ${r.title}</div>`;
+if(r.flags&&r.flags.length>0){
+r.flags.forEach(f=>{
+const fc=f.level==='red'?'#991b1b':f.level==='orange'?'#92400e':'#1e40af';
+const fbg=f.level==='red'?'#fee2e2':f.level==='orange'?'#fef3c7':'#dbeafe';
+h+=`<div style="background:${fbg};border-radius:8px;padding:.6rem .8rem;margin-top:.4rem">`;
+h+=`<div style="font-weight:700;font-size:.85rem;color:${fc}">${f.icon} ${f.title}</div>`;
+h+=`<div style="font-size:.78rem;color:#4b5563;margin-top:.15rem">${f.desc}</div></div>`});
+} else {
+h+=`<div style="text-align:center;color:${tc};font-size:.85rem">הרכב נראה תקין לפי הנתונים הזמינים במאגר הממשלתי.</div>`}
+h+=`<div style="text-align:center;font-size:.68rem;color:#94a3b8;margin-top:.5rem">⚠️ ניתוח זה מבוסס על נתונים ממשלתיים בלבד ואינו מחליף בדיקת רכב מקצועית או בדיקת מסלקת ביטוח</div>`;
+h+=`</div>`}
 
 // Vehicle groups
 const vg=d.vehicle_groups||[];
